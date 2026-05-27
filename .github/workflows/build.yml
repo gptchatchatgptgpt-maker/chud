@@ -1,0 +1,24 @@
+name: Build Mod JAR
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Java 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Build with Gradle
+        run: chmod +x gradlew && ./gradlew build
+      - name: Upload JAR
+        uses: actions/upload-artifact@v3
+        with:
+          name: realistic-trees-mod
+          path: build/libs/realistic-trees-1.0.0.jar
