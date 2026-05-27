@@ -1,0 +1,178 @@
+package com.realistictrees.world.feature;
+
+import com.mojang.serialization.Codec;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
+import net.minecraft.block.LeavesBlock;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.StructureWorldAccess;
+import net.minecraft.world.gen.feature.DefaultFeatureConfig;
+import net.minecraft.world.gen.feature.Feature;
+import net.minecraft.world.gen.feature.util.FeatureContext;
+
+/**
+ * RealisticTreeFeature — generates tall organic trees that look great under shaders.
+ *
+ * Tree anatomy:
+ *   • Lower 1/3 of trunk  : OAK_LOG  (solid, bark texture)
+ *   • Upper 2/3 of trunk  : OAK_FENCE (thin 4/16-wide post, twig-like)
+ *   • Branches            : OAK_FENCE arcing upward in random directions
+ *   • Leaf clusters       : OAK_LEAVES (persistent) placed at every branch tip
+ *     and in a big crown at the top
+ *
+ * A random float between 0.0 and 1.0 is used at every key decision point so that
+ * no two trees ever look the same.
+ */
+public class RealisticTreeFeature extends Feature<DefaultFeatureConfig> {
+
+    // Leaf state — persistent=true prevents vanilla decay
+    private static final BlockState LEAF_STATE =
+        Blocks.OAK_LEAVES.getDefaultState().with(LeavesBlock.PERSISTENT, true);
+
+    private static final BlockState LOG_STATE   = Blocks.OAK_LOG.getDefaultState();
+    private static final BlockState FENCE_STATE = Blocks.OAK_FENCE.getDefaultState();
+
+    public RealisticTreeFeature(Codec<DefaultFeatureConfig> codec) {
+        super(codec);
+    }
+
+    // -----------------------------------------------------------------------
+    // Optional Conquest Reforged block lookup (graceful fallback to vanilla)
+    // -----------------------------------------------------------------------
+    private BlockState crOrFallback(String crId, BlockState fallback) {
+        try {
+            Identifier id = new Identifier(crId);
+            if (Registries.BLOCK.containsId(id)) {
+                return Registries.BLOCK.get(id).getDefaultState();
+            }
+        } catch (Exception ignored) { }
+        return fallback;
+    }
+
+    // -----------------------------------------------------------------------
+    // Entry point
+    // -----------------------------------------------------------------------
+    @Override
+    public boolean generate(FeatureContext<DefaultFeatureConfig> ctx) {
+        StructureWorldAccess world  = ctx.getWorld();
+        BlockPos             origin = ctx.getOrigin();
+        var                  rng    = ctx.getRandom();   // Minecraft's seeded random
+
+        // ---- Ground check ----
+        BlockState ground = world.getBlockState(origin.down());
+        boolean validGround = ground.isOf(Blocks.GRASS_BLOCK)
+                           || ground.isOf(Blocks.DIRT)
+                           || ground.isOf(Blocks.PODZOL)
+                           || ground.isOf(Blocks.COARSE_DIRT)
+                           || ground.isOf(Blocks.ROOTED_DIRT);
+        if (!validGround) return false;
+
+        // ---- Block palette (tries CR blocks first, vanilla fallback) ----
+        BlockState trunkBlock  = crOrFallback("conquestmc:oak_log",    LOG_STATE);
+        BlockState branchBlock = crOrFallback("conquestmc:oak_fence",  FENCE_STATE);
+        BlockState leafBlock;
+        {
+            // Leaves need persistent=true; handle CR leaf state separately
+            BlockState cr = crOrFallback("conquestmc:oak_leaves", null);
+            leafBlock = (cr != null) ? cr : LEAF_STATE;
+        }
+
+        // ---- Tree parameters — all driven by rng.nextFloat() (0.0–1.0) ----
+        int trunkHeight = 14 + (int)(rng.nextFloat() * 9);   // 14–22 blocks
+        int numBranches =  5 + (int)(rng.nextFloat() * 5);   // 5–9 branches
+        int taperAt     = trunkHeight / 3;                    // log→fence transition
+
+        // ---- Trunk ----
+        for (int y = 0; y < trunkHeight; y++) {
+            BlockPos p = origin.up(y);
+            BlockState existing = world.getBlockState(p);
+            if (!existing.isAir() && !existing.isOf(Blocks.GRASS_BLOCK)) {
+                if (y < 3) return false;  // abort if the base is buried
+                break;
+            }
+            BlockState block = (y < taperAt) ? trunkBlock : branchBlock;
+            setBlockStateIf(world, p, block,
+                s -> s.isAir() || s.isOf(Blocks.GRASS_BLOCK));
+        }
+
+        // ---- Branches ----
+        for (int i = 0; i < numBranches; i++) {
+            // Start height: 40%–92% up the trunk (rng.nextFloat() is 0.0–1.0)
+            float   hFrac  = 0.40f + rng.nextFloat() * 0.52f;
+            int     startY = (int)(trunkHeight * hFrac);
+            BlockPos bOrigin = origin.up(startY);
+
+            // Horizontal direction — full 360°
+            double angle  = rng.nextFloat() * 2.0 * Math.PI;
+
+            // Reach and rise — always upward, varying spread
+            double hReach = 1.5  + rng.nextFloat() * 2.5;   // 1.5–4.0 blocks out
+            double vRise  = 2.0  + rng.nextFloat() * 4.0;   // 2.0–6.0 blocks up
+
+            double endDX = Math.sin(angle) * hReach;
+            double endDZ = Math.cos(angle) * hReach;
+
+            int steps = 3 + (int)(rng.nextFloat() * 4);     // 3–6 steps
+
+            // Walk the branch — quadratic curve gives the upward sweep shape
+            BlockPos prev = null;
+            for (int s = 1; s <= steps; s++) {
+                double t      = (double) s / steps;
+                double curveT = t * t;                        // accelerates upward
+                int bx = bOrigin.getX() + (int) Math.round(endDX * t);
+                int by = bOrigin.getY() + (int) Math.round(vRise  * curveT);
+                int bz = bOrigin.getZ() + (int) Math.round(endDZ * t);
+                BlockPos bp = new BlockPos(bx, by, bz);
+                if (!bp.equals(prev)) {
+                    setBlockStateIf(world, bp, branchBlock,
+                        s2 -> s2.isAir() || s2.isOf(Blocks.GRASS_BLOCK));
+                    prev = bp;
+                }
+            }
+
+            // Leaf cluster at the branch tip
+            BlockPos tip = new BlockPos(
+                bOrigin.getX() + (int) Math.round(endDX),
+                bOrigin.getY() + (int) Math.round(vRise),
+                bOrigin.getZ() + (int) Math.round(endDZ)
+            );
+            int leafRadius = 2 + (int)(rng.nextFloat() * 2);  // radius 2 or 3
+            generateLeafCluster(world, tip, leafRadius, leafBlock, rng);
+        }
+
+        // ---- Crown (top canopy) ----
+        BlockPos top = origin.up(trunkHeight);
+        generateLeafCluster(world, top,        3 + (int)(rng.nextFloat() * 2), leafBlock, rng);
+        generateLeafCluster(world, top.down(1), 2,                              leafBlock, rng);
+
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Organic leaf cluster
+    //   Uses rng.nextFloat() (0.0–1.0) to punch ~20% random gaps — this gives
+    //   the irregular, see-through canopy look visible in the screenshot.
+    // -----------------------------------------------------------------------
+    private void generateLeafCluster(StructureWorldAccess world, BlockPos center,
+                                     int radius, BlockState leaf,
+                                     net.minecraft.util.math.random.Random rng) {
+        int rSq = radius * radius;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -(int)(radius * 0.6); dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    // Ellipsoid: wider sideways, slightly flatter top/bottom
+                    double distSq = dx * dx + dy * dy * 1.35 + dz * dz;
+                    if (distSq <= rSq) {
+                        float r = rng.nextFloat();   // 0.0 → 1.0
+                        if (r > 0.20f) {             // place ~80% of positions
+                            setBlockStateIf(world, center.add(dx, dy, dz),
+                                leaf, s -> s.isAir());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
