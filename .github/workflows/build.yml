@@ -29,4 +29,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: realistic-trees-mod
-          path: build/libs/realistic-trees-1.0.0.jar
+          path: build/libs/realistic-trees-*.jar
+          if-no-files-found: error
