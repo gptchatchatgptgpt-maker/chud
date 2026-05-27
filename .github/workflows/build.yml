@@ -22,11 +22,14 @@ jobs:
         with:
           gradle-version: '8.3'
 
-      - name: Build with Gradle
-        run: gradle build
+      - name: Generate Gradle Wrapper
+        run: gradle wrapper --gradle-version 8.3
+
+      - name: Build with Gradle Wrapper
+        run: chmod +x gradlew && ./gradlew build --stacktrace
 
       - name: List build output
-        run: find build/libs -type f || echo "Nothing in build/libs"
+        run: find build -type f | sort || echo "Nothing in build"
 
       - name: Upload JAR
         uses: actions/upload-artifact@v4
